@@ -129,7 +129,22 @@ Primary dev loop: `make check` (formats, lints, tests).
 
 There are no tests yet. The library depends on puregotk which loads GTK via dlopen at runtime, so tests exercising GTK functionality need GTK libraries on the host.
 
-Versioning uses `svu` (semantic version utility): `make bump` runs checks, tags next semver, and pushes the tag. Requires a clean working tree.
+Versioning uses `svu` (semantic version utility): `make bump` runs checks, tags next semver, and pushes the tag. Requires a clean working tree. Configured via `.svu.yaml` with `v0: true` (stays in 0.x range) and `always: true` (always bumps even without conventional commits).
+
+## CI Pipeline
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` with four parallel jobs:
+
+| Job | What it does |
+|---|---|
+| **Lint** | `golangci-lint` via the official action |
+| **Unit Tests** | `go test -v ./...` |
+| **Race Detection** | `go test -race -short ./...` |
+| **Verify** | `go mod tidy` (checks for drift), `go vet`, `gofmt -l` (checks formatting) |
+
+All jobs use Go 1.24 on `ubuntu-latest`. Note: CI tests will pass vacuously until actual test files are added, since there are no `_test.go` files yet.
+
+Dependabot is configured (`.github/dependabot.yml`) to monitor `gomod` and `github-actions` updates.
 
 ## Configuration
 
