@@ -14,7 +14,7 @@ make test-cover   # generate coverage.out and coverage.html
 make bump         # tag next semver via svu, push tag (requires clean tree)
 ```
 
-There are no tests yet. The library depends on puregotk which loads GTK via dlopen at runtime, so tests that exercise GTK functionality need GTK libraries available on the host.
+The only test is the workflow pinning test in `internal/workflowpin`. All actions in `.github/workflows` must be pinned to a full commit SHA with a `# vX.Y.Z` comment (ADR-0021). The library depends on puregotk which loads GTK via dlopen at runtime, so tests that exercise GTK functionality need GTK libraries available on the host.
 
 ## Architecture
 
