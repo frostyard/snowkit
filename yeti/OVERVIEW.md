@@ -16,7 +16,7 @@ snowkit/
 │   └── register.go
 ├── toast/        # Toast notification interface (pure contract)
 │   └── notifier.go
-├── go.mod        # Module: github.com/frostyard/snowkit (Go 1.24.2)
+├── go.mod        # Module: github.com/frostyard/snowkit (Go 1.24.6)
 ├── Makefile      # Build/lint/test/release targets
 ├── CLAUDE.md     # AI assistant instructions
 └── yeti/         # AI-optimized documentation (this directory)
@@ -127,22 +127,23 @@ puregotk uses `purego` to call C functions via `dlopen`/`dlsym` at runtime — t
 
 Primary dev loop: `make check` (formats, lints, tests).
 
-There are no tests yet. The library depends on puregotk which loads GTK via dlopen at runtime, so tests exercising GTK functionality need GTK libraries on the host.
+The only test is `internal/workflowpin/workflowpin_test.go`, which checks that workflow actions are pinned to full commit SHAs (ADR-0021). The library depends on puregotk which loads GTK via dlopen at runtime, so tests exercising GTK functionality need GTK libraries on the host.
 
 Versioning uses `svu` (semantic version utility): `make bump` runs checks, tags next semver, and pushes the tag. Requires a clean working tree. Configured via `.svu.yaml` with `v0: true` (stays in 0.x range) and `always: true` (always bumps even without conventional commits).
 
 ## CI Pipeline
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` with four parallel jobs:
+GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` with five parallel jobs:
 
 | Job | What it does |
 |---|---|
-| **Lint** | `golangci-lint` via the official action |
+| **Lint** | `golangci-lint` v2.15.0 (pinned) via the official action |
 | **Unit Tests** | `go test -v ./...` |
 | **Race Detection** | `go test -race -short ./...` |
 | **Verify** | `go mod tidy` (checks for drift), `go vet`, `gofmt -l` (checks formatting) |
+| **Vulnerability Check** | `govulncheck ./...` (govulncheck v1.6.0, pinned, installed with `go install`) |
 
-All jobs use Go 1.24 on `ubuntu-latest`. Note: CI tests will pass vacuously until actual test files are added, since there are no `_test.go` files yet.
+All jobs run on `ubuntu-latest` and read the Go version from `go.mod` (`go-version-file: go.mod`), currently 1.24.6, the lowest Go 1.24 patch that fixes GO-2025-3956 (`os/exec`) and GO-2025-3750 (`os`), which govulncheck reported as reachable at 1.24.2. `setup-go` sets `GOTOOLCHAIN=local`. govulncheck v1.6.0 needs Go 1.25 to build, so the install step sets `GOTOOLCHAIN=auto`: then `go install` can download a newer toolchain (Go 1.25 or later) for the build. The scan step keeps `GOTOOLCHAIN=local`, so it checks the stdlib of the Go version in `go.mod`. The only `_test.go` file is `internal/workflowpin/workflowpin_test.go`, so the Unit Tests and Race jobs mostly run that test.
 
 Dependabot is configured (`.github/dependabot.yml`) to monitor `gomod` and `github-actions` updates.
 
