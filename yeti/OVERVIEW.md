@@ -143,7 +143,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` with five 
 | **Verify** | `go mod tidy` (checks for drift), `go vet`, `gofmt -l` (checks formatting) |
 | **Vulnerability Check** | `govulncheck ./...` (govulncheck v1.6.0, pinned, installed with `go install`) |
 
-All jobs run on `ubuntu-latest` and read the Go version from `go.mod` (`go-version-file: go.mod`), currently 1.24.6, the lowest patch release without known stdlib vulnerabilities. `setup-go` sets `GOTOOLCHAIN=local`. govulncheck v1.6.0 needs Go 1.25 to build, so the install step sets `GOTOOLCHAIN=auto`: then `go install` can download the Go 1.25 toolchain for the build. The scan step keeps `GOTOOLCHAIN=local`, so it checks the stdlib of the Go version in `go.mod`. The only `_test.go` file is `internal/workflowpin/workflowpin_test.go`, so the Unit Tests and Race jobs mostly run that test.
+All jobs run on `ubuntu-latest` and read the Go version from `go.mod` (`go-version-file: go.mod`), currently 1.24.6, the lowest Go 1.24 patch that fixes GO-2025-3956 (`os/exec`) and GO-2025-3750 (`os`), which govulncheck reported as reachable at 1.24.2. `setup-go` sets `GOTOOLCHAIN=local`. govulncheck v1.6.0 needs Go 1.25 to build, so the install step sets `GOTOOLCHAIN=auto`: then `go install` can download a newer toolchain (Go 1.25 or later) for the build. The scan step keeps `GOTOOLCHAIN=local`, so it checks the stdlib of the Go version in `go.mod`. The only `_test.go` file is `internal/workflowpin/workflowpin_test.go`, so the Unit Tests and Race jobs mostly run that test.
 
 Dependabot is configured (`.github/dependabot.yml`) to monitor `gomod` and `github-actions` updates.
 
