@@ -16,6 +16,8 @@ make bump         # tag next semver via svu, push tag (requires clean tree)
 
 The only test is the workflow pinning test in `internal/workflowpin`. All actions in `.github/workflows` must be pinned to a full commit SHA with a `# vX.Y.Z` comment (ADR-0021). The library depends on puregotk which loads GTK via dlopen at runtime, so tests that exercise GTK functionality need GTK libraries available on the host.
 
+CI reads the Go version from `go.mod` and runs `govulncheck` (pinned v1.6.0); keep the `go` line at a patch release without known stdlib vulnerabilities.
+
 ## Architecture
 
 Snowkit is a Go utility library for building GTK/GNOME applications with [puregotk](https://codeberg.org/nicegotk/puregotk). It provides three independent packages:
