@@ -5,14 +5,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The merge queue requests the required checks on its own
+  # `gh-readonly-queue/*` branches; without this trigger those contexts never
+  # report and every queue entry waits out the check timeout.
+  merge_group:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -24,14 +30,26 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+      # mise.toml and mise.lock are the single source of every tool pin: this
+      # installs exactly the locked golangci-lint, checksum-verified, the same
+      # way a developer's `mise install` does, so the two cannot drift. Go
+      # still comes from actions/setup-go above (go.mod's go line).
+      - name: Install pinned tools
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
-          version: v2.15.0
+          install: true
+          install_args: golangci-lint
+          cache: true
+
+      - name: Lint
+        run: make lint
 
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -47,11 +65,14 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test -v ./...
+        run: make test
 
   race:
     name: Race Detection
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -67,38 +88,48 @@ jobs:
         run: go mod download
 
       - name: Run tests with race detector
-        run: go test -race -short ./...
+        run: make test-race
 
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          # The corrections check compares .memory/corrections.jsonl with the PR
+          # base, so the base commit must be in the clone.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
 
-      - name: Verify go.mod is tidy
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
+      # The verify gate needs the golangci-lint pin and, for the template gate
+      # (ADR-0003), the Node pin, both checksum-verified from mise.lock.
+      - name: Install pinned tools
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        with:
+          install: true
+          install_args: golangci-lint node
+          cache: true
 
-      - name: Run go vet
-        run: go vet ./...
-
-      - name: Check formatting
-        run: |
-          gofmt -l .
-          test -z "$(gofmt -l .)"
+      - name: Run the verify gate
+        run: make ci BASE="$BASE"
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
 
   govulncheck:
     name: Vulnerability Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

@@ -14,10 +14,17 @@ var (
 	usesLine       = regexp.MustCompile(`^\s*(?:-\s+)?uses:\s*(\S+)(.*)$`)
 	pinnedRef      = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}$`)
 	versionComment = regexp.MustCompile(`^\s+#\s*v\S*`)
+	// A reusable workflow from a repository with no release tags (such as
+	// frostyard/core) names the pull request that made the pinned commit:
+	// "# core#194".
+	reusableWorkflow = regexp.MustCompile(`^[^@]+/\.github/workflows/[^@]+@`)
+	prComment        = regexp.MustCompile(`^\s+#\s*[A-Za-z0-9_.-]+#[0-9]+\b`)
 )
 
 // TestActionsPinnedToCommitSHA enforces ADR-0021: every external action is
-// pinned to a full commit SHA with a "# v..." version comment.
+// pinned to a full commit SHA with a "# v..." version comment. A reusable
+// workflow from a repository with no release tags may name its pull request
+// instead ("# core#194").
 func TestActionsPinnedToCommitSHA(t *testing.T) {
 	var files []string
 	for _, dir := range []string{"../../" + ".github/workflows", "../../" + ".github/actions"} {
@@ -59,7 +66,9 @@ func TestActionsPinnedToCommitSHA(t *testing.T) {
 			if strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "docker://") {
 				continue
 			}
-			if !pinnedRef.MatchString(ref) || !versionComment.MatchString(m[2]) {
+			commented := versionComment.MatchString(m[2]) ||
+				(reusableWorkflow.MatchString(ref) && prComment.MatchString(m[2]))
+			if !pinnedRef.MatchString(ref) || !commented {
 				t.Errorf("%s:%d: action must be pinned to a 40-char commit SHA with a `# v...` comment: %s", file, n, strings.TrimSpace(line))
 			}
 		}
