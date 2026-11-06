@@ -93,12 +93,14 @@ Types:
     `RegisterType` calls it with no nil check.
 - `InstanceRegistry` maps GObject C pointers (`uintptr`) to Go struct pointers
   (`unsafe.Pointer`):
-  - `Pin(o *gobject.Object, goInstance unsafe.Pointer)` stores the pair, pins
-    the Go pointer and sets the destroy-notify cleanup.
+  - `Pin(o *gobject.Object, goInstance unsafe.Pointer)` stores the pair and
+    pins the Go pointer. Its destroy-notify cleanup never runs (see below).
   - `Get(goPointer uintptr) unsafe.Pointer` returns the Go struct for a GObject
     pointer, or `nil`.
 
-Lifecycle (keep it when you change this package):
+Lifecycle. The design intent is "pin while the GObject lives, unpin when it is
+finalized"; the current code does only the first half
+([#12](https://github.com/frostyard/snowkit/issues/12)):
 
 1. **Registration.** `RegisterType` reads the parent's class and instance sizes
    with `gobject.NewTypeQuery`, then calls `gobject.TypeRegisterStaticSimple`
@@ -108,20 +110,28 @@ Lifecycle (keep it when you change this package):
    - pins `goPtr` with a new `runtime.Pinner`, so the collector does not move
      or free it;
    - stores `instances[obj.GoPointer()] = goPtr`;
-   - attaches a `glib.DestroyNotify` with `SetDataFull("prevent_gc", 0, …)`.
-3. **Cleanup.** When the GObject is finalized, GLib calls the destroy notify,
-   which deletes the map entry and calls `pinner.Unpin()`.
+   - calls `SetDataFull("prevent_gc", 0, &cleanup)`, where `cleanup` would
+     delete the map entry and call `pinner.Unpin()`.
+3. **Cleanup (does not happen).** The data argument of `SetDataFull` is `0`
+   (NULL), and GLib does not call the destroy callback when the data is NULL
+   (puregotk's doc comment on `Object.SetDataFull`). With NULL data the call
+   stores nothing (`GetData("prevent_gc")` returns `0`). So `cleanup` never
+   runs: the map entry and the pin stay for the life of the process, also after
+   the GObject is finalized.
 
-Invariants:
+Current behavior (checked at `4f8bd38` with GLib on the host: a subtype of
+`GObject`, `Pin`, then `Unref`; a control `SetDataFull` with data `1` on the
+same object is called at finalization):
 
-- Every `Pin` ends with the GObject's destruction. A leaked GObject leaks the
-  C object and the pinned Go struct: the Go struct lives as long as the
-  GObject.
+- After the GObject is finalized, `Get` still returns the Go struct, and the
+  struct stays pinned. Each pinned instance leaks 1 Go struct and 1 map entry.
+  chairlift pins 1 application object, so it leaks 1 object for the process
+  life.
+- A second `Pin` on the same object overwrites the map entry; the first pinner
+  stays pinned.
+- A new GObject at a reused address has the same key: `Get` returns the old
+  struct until `Pin` overwrites it.
 - `InstanceRegistry` has no lock. Call `Pin` and `Get` on the GTK main thread.
-- Call `Pin` once per instance. `g_object_set_data_full` destroys an old
-  association with the same key, so a second `Pin` runs the first cleanup,
-  which deletes the new map entry (`Get` then returns `nil`) and unpins the
-  first pinner.
 
 ### Package `toast`: notification contract
 
@@ -149,9 +159,11 @@ scheduling without GObject registration, or the reverse.
 
 ### Pinner plus destroy notify (`gobj`)
 
-`runtime.Pinner` keeps the Go struct in place while C holds its pointer, and
-the GObject destroy notify releases it. The Go struct's lifetime follows the
-GObject's.
+`runtime.Pinner` keeps the Go struct in place while C holds its pointer. The
+intent is that a GObject destroy notify releases it, so that the Go struct
+lives as long as the GObject; today the notify is never set
+([#12](https://github.com/frostyard/snowkit/issues/12)), so the struct stays
+pinned until the process ends.
 
 ### ID registry for callbacks (`gtk`)
 
@@ -176,13 +188,16 @@ build has no cgo:
   each Go function pointer into a C callback with `purego.NewCallbackFnPtr`.
   purego has a fixed table of 2000 callbacks on Linux and macOS (`maxCB`), and
   it caches by function pointer. `RunOnMainThread` makes a new `SourceFunc`
-  value on every call, and `Pin` a new `DestroyNotify`, and neither calls
+  value on every call, and `Pin` a new `DestroyNotify` (made even though GLib
+  never stores it), and neither calls
   `glib.UnrefCallback`. So each call uses 1 slot for the life of the process,
   and after about 2000 calls (fewer, because other callbacks share the table)
   purego panics with `purego: the maximum number of callbacks has been
   reached`. Reproduced at `4f8bd38` with 2500 calls and no main loop: the panic
   came at call 2000. Tracked in
   [frostyard/snowkit#10](https://github.com/frostyard/snowkit/issues/10).
+- **`Pin` leaks.** Each pinned instance stays pinned and in the map after
+  finalization ([#12](https://github.com/frostyard/snowkit/issues/12)).
 - **Thread rules.** `RunOnMainThread` is safe from any goroutine. Everything in
   `gobj` runs on the main thread.
 

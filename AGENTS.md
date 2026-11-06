@@ -52,13 +52,19 @@ Node.js 22 or later for the template gate.
   `RunOnMainThread` again without a deadlock. The Go closure crosses the C
   boundary only as its `uintptr` ID (the `data` argument of `glib.IdleAdd`).
 - **`gobj` lifecycle.** `InstanceRegistry.Pin` (`gobj/register.go`) pins the Go
-  pointer with a `runtime.Pinner`, stores it in `instances` under
-  `o.GoPointer()`, and sets a `glib.DestroyNotify` with
-  `SetDataFull("prevent_gc", …)` that deletes the entry and unpins when the
-  GObject is finalized. A change here must keep that pin-then-unpin-on-destroy
-  lifecycle. `InstanceRegistry` has no lock: call `Pin` and `Get` on the GTK
-  main thread. Call `Pin` once per instance: a second `SetDataFull` with the
-  same key runs the first cleanup, which deletes the new map entry.
+  pointer with a `runtime.Pinner` and stores it in `instances` under
+  `o.GoPointer()`. The intended cleanup (a `glib.DestroyNotify` that deletes
+  the entry and unpins at finalization) never runs: `Pin` passes data `0` to
+  `SetDataFull("prevent_gc", 0, …)`, and GLib calls no destroy callback for
+  NULL data. So every `Pin` leaks its entry and its pin
+  ([frostyard/snowkit#12](https://github.com/frostyard/snowkit/issues/12)). A
+  fix must make the pin-then-unpin-on-finalize lifecycle real, with a test.
+  `InstanceRegistry` has no lock: call `Pin` and `Get` on the GTK main thread.
+- **Check a GLib lifecycle claim against the binding.** Before a doc or a
+  comment says when GLib calls a callback, read the puregotk doc comment of the
+  call (in the module cache) and run it once with GLib on the host. A claim
+  from the GLib function name alone was wrong once (#11, `SetDataFull` with
+  NULL data).
 - **Each `RunOnMainThread` call and each `Pin` uses 1 purego callback slot that
   is never freed** (limit 2000 per process on Linux and macOS). Do not add a
   new per-call `glib.NewCallback` path; the fix is tracked in
