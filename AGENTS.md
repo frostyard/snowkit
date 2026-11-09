@@ -79,7 +79,7 @@ Node.js 22 or later for the template gate.
 - **Actions are pinned.** Every `uses:` in `.github/workflows/` is a full
   40-character commit SHA with a `# vX.Y.Z` comment (frostyard/core ADR-0021).
   A reusable workflow from a repository with no release tags names the pull
-  request of the pinned commit instead (`# core#194` in `risk-paths.yml`).
+  request of the pinned commit instead (`# core#225` in `risk-paths.yml`).
   `internal/workflowpin/workflowpin_test.go` fails otherwise; it is the only
   Go test in the module.
 - **Go comes from `go.mod` only.** CI reads the `go` line (`go-version-file:
@@ -103,10 +103,16 @@ when no test can catch it. The same PR appends 1 line to
 `.memory/corrections.jsonl` (`evidence`: the PR and the review;
 `promoted_to`: the test or the rule). See `.memory/README.md`.
 
-**Risk paths.** `.github/risk-paths.json` lists the high-risk paths; a PR that
-touches one gets `risk:high` from `.github/workflows/risk-paths.yml` and
-declares tier 3. Add a path when you add a file of that kind (signing, auth,
-publish, secrets, destructive operations, CI).
+**Risk paths.** `.github/risk-paths.json` lists the risk paths, each at a level
+from L1 to L4, with a `default_level` of L3 for a path that no glob matches. A
+PR gets 1 level label (`level:L1` to `level:L4`) and, at L1 or L2, `risk:high`,
+from the `.github/workflows/risk-paths.yml` caller of core's `pr-triage.yml`
+(core ADR-0078). The caller reads the list at the base and keeps the strictest
+level; it also removes `ready-for-human` when the head moves after the label,
+or when CI at the head is not green when the label comes (core ADR-0077). A PR
+with `risk:high` declares tier 3. Add a path when you add a file of that kind
+(signing, auth, publish, secrets, destructive operations, CI); for an L1 or L2
+entry, its `why` starts with a category of core's risk-paths spec.
 
 **Vendored files.** `scripts/lib/risk-paths.mjs` and
 `scripts/check-corrections.mjs` are copies from frostyard/core; never edit them
@@ -182,5 +188,10 @@ anchors valid) and add the back-links on the targets. Use relative paths.
 
 Bugs and feature requests live in GitHub Issues; a fix arrives as a pull
 request that closes its issue. Labels in use: `ready-for-human` (a PR that is
-reviewed, has green CI and is ready for the owner), `sweep` (a finding of the
-conformance sweep), `risk:high` (applied by the risk-paths workflow).
+reviewed at its current head, has green CI and is ready for the owner; the PR
+triage caller removes it when the head moves after the label, or when the
+label comes while CI at the head is not green),
+`sweep` (a finding of the conformance sweep), `level:L1` to `level:L4` (the
+review level of the changed paths) and `risk:high` (the alias of L1 and L2);
+the last 2 come from the `.github/workflows/risk-paths.yml` caller of core's
+`pr-triage.yml`.
