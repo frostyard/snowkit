@@ -16,7 +16,7 @@ var (
 	versionComment = regexp.MustCompile(`^\s+#\s*v\S*`)
 	// A reusable workflow from a repository with no release tags (such as
 	// frostyard/core) names the pull request that made the pinned commit:
-	// "# core#194".
+	// "# core#225".
 	reusableWorkflow = regexp.MustCompile(`^[^@]+/\.github/workflows/[^@]+@`)
 	prComment        = regexp.MustCompile(`^\s+#\s*[A-Za-z0-9_.-]+#[0-9]+\b`)
 )
@@ -24,7 +24,7 @@ var (
 // TestActionsPinnedToCommitSHA enforces ADR-0021: every external action is
 // pinned to a full commit SHA with a "# v..." version comment. A reusable
 // workflow from a repository with no release tags may name its pull request
-// instead ("# core#194").
+// instead ("# core#225").
 func TestActionsPinnedToCommitSHA(t *testing.T) {
 	var files []string
 	for _, dir := range []string{"../../" + ".github/workflows", "../../" + ".github/actions"} {

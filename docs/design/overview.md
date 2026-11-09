@@ -228,7 +228,7 @@ The only Go test is `internal/workflowpin/workflowpin_test.go`. It walks
 a 40-character commit SHA with a `# v…` comment (local `./` and `docker://`
 references are skipped). A reusable workflow (`…/.github/workflows/…@SHA`) can
 name the pull request of the pinned commit instead, because frostyard/core has
-no release tags: `risk-paths.yml` uses `# core#194`. It fails when it finds no workflow file.
+no release tags: `risk-paths.yml` uses `# core#225`. It fails when it finds no workflow file.
 
 Versions come from `svu` with [.svu.yml](../../.svu.yml) (`v0: true`: no bump
 to v1 while the version is v0; `always: true`: a patch bump when no commit
@@ -260,9 +260,14 @@ step sets `GOTOOLCHAIN=auto` and `go install` can fetch a newer toolchain for
 the build; the scan step keeps `GOTOOLCHAIN=local`, so it checks the standard
 library of the `go.mod` version.
 
-`.github/workflows/risk-paths.yml` calls frostyard/core's risk-paths workflow
-(pinned by SHA) on `pull_request_target`; a PR that touches a path in
-`.github/risk-paths.json` gets the `risk:high` label (ADR-0068).
+`.github/workflows/risk-paths.yml` is the caller of frostyard/core's PR triage
+workflow (`pr-triage.yml`, pinned by SHA) on `pull_request_target`. It adds 1
+level label, `level:L1` to `level:L4`, from the strictest level of the changed
+paths in `.github/risk-paths.json` at the base, and `risk:high` at L1 or L2.
+It also removes `ready-for-human` when the head moves after the label, or when
+the label comes while CI at the head is not green, and writes a comment that
+says why (core ADR-0077, ADR-0078; ADR-0068 keeps `risk:high` as the alias of
+L1 and L2). Its job id is `pr-triage`, and it is not a required check.
 
 Dependabot (`.github/dependabot.yml`) updates `gomod` and `github-actions`
 weekly.
