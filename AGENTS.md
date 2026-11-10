@@ -52,36 +52,47 @@ Node.js 22 or later for the template gate.
   `RunOnMainThread` again without a deadlock. The Go closure crosses the C
   boundary only as its `uintptr` ID (the `data` argument of `glib.IdleAdd`).
 - **`gobj` lifecycle.** `InstanceRegistry.Pin` (`gobj/register.go`) pins the Go
-  pointer with a `runtime.Pinner` and stores it in `instances` under
-  `o.GoPointer()`. The intended cleanup (a `glib.DestroyNotify` that deletes
-  the entry and unpins at finalization) never runs: `Pin` passes data `0` to
-  `SetDataFull("prevent_gc", 0, …)`, and GLib calls no destroy callback for
-  NULL data. So every `Pin` leaks its entry and its pin
-  ([frostyard/snowkit#12](https://github.com/frostyard/snowkit/issues/12)). A
-  fix must make the pin-then-unpin-on-finalize lifecycle real, with a test.
-  `InstanceRegistry` has no lock: call `Pin` and `Get` on the GTK main thread.
+  pointer with the entry's `runtime.Pinner`, stores the `*pinEntry` in
+  `instances` under `o.GoPointer()`, and gives GLib a non-zero ID as the data of
+  `SetDataFull("prevent_gc", id, …)` with 1 package-level destroy notify. GLib
+  calls that notify with the ID when it finalizes the object, and also when
+  `Pin` sets the same key again on the object (then the previous Go pointer is
+  released). The notify deletes `pins[id]`, deletes the registry entry only if
+  it is still that same entry, and unpins. `Get` returns nil after
+  finalization, or after a later `Pin` replaced the entry
+  ([frostyard/snowkit#12](https://github.com/frostyard/snowkit/issues/12) is
+  fixed). `InstanceRegistry` and the `pins` table each have a mutex, because
+  finalization can run on another thread. Never call into GLib while you hold a
+  lock: `SetDataFull` can call the old destroy notify synchronously.
 - **Check a GLib lifecycle claim against the binding.** Before a doc or a
   comment says when GLib calls a callback, read the puregotk doc comment of the
   call (in the module cache) and run it once with GLib on the host. A claim
   from the GLib function name alone was wrong once (#11, `SetDataFull` with
   NULL data).
-- **Each `RunOnMainThread` call and each `Pin` uses 1 purego callback slot that
-  is never freed** (limit 2000 per process on Linux and macOS). Do not add a
-  new per-call `glib.NewCallback` path; the fix is tracked in
-  [frostyard/snowkit#10](https://github.com/frostyard/snowkit/issues/10).
+- **Callback slots are counted per function address.** purego keeps 1 callback
+  slot per function-variable ADDRESS and has 2000 per process on Linux and
+  macOS. `gtk` passes the package-level `idleSourceFunc` to every
+  `glib.IdleAdd`, and `gobj` passes the package-level `pinDestroyNotify` to
+  every `SetDataFull`, so each of them uses 1 slot for the whole process
+  ([frostyard/snowkit#10](https://github.com/frostyard/snowkit/issues/10) is
+  fixed). Do not add a per-call `glib.NewCallback` path, and never pass a
+  function variable declared inside a function by address to puregotk: its new
+  address takes a new slot that is never freed.
 - **`toast.Notifier` is a contract only.** It has `ShowToast(message string)`
   and `ShowErrorToast(message string)`; the consuming application implements
   it. Do not add an implementation to this module.
 - **puregotk, not cgo.** puregotk loads GTK with `dlopen` through purego. The
   module builds with no C compiler, but GTK and GLib shared libraries must be
-  present at run time. A test that calls GTK or GLib needs them on the host;
-  CI's `ubuntu-latest` runners do not install them.
+  present at run time. A test that calls GTK or GLib needs those libraries on
+  the host: CI's `ubuntu-latest` runners have GLib and GObject
+  (`libglib-2.0.so.0`, `libgobject-2.0.so.0`) and no GTK library.
 - **Actions are pinned.** Every `uses:` in `.github/workflows/` is a full
   40-character commit SHA with a `# vX.Y.Z` comment (frostyard/core ADR-0021).
   A reusable workflow from a repository with no release tags names the pull
   request of the pinned commit instead (`# core#225` in `risk-paths.yml`).
-  `internal/workflowpin/workflowpin_test.go` fails otherwise; it is the only
-  Go test in the module.
+  `internal/workflowpin/workflowpin_test.go` fails otherwise. The `gtk` and
+  `gobj` tests need only `libglib-2.0.so.0` and `libgobject-2.0.so.0` on the
+  host (see the puregotk rule); `internal/workflowpin` needs nothing.
 - **Go comes from `go.mod` only.** CI reads the `go` line (`go-version-file:
   go.mod`) and runs `govulncheck` v1.6.0. When govulncheck reports a reachable
   standard-library vulnerability, raise the `go` line to the lowest patch that

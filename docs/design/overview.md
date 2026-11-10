@@ -27,7 +27,8 @@ snowkit/
 ├── gtk/mainthread.go           RunOnMainThread: schedule a closure on the GTK main loop (imports glib)
 ├── gobj/register.go            RegisterType, TypeDef, InstanceRegistry (imports glib, gobject)
 ├── toast/notifier.go           Notifier interface (no imports)
-├── internal/workflowpin/       workflowpin_test.go: the action-pinning test (ADR-0021), the only Go test
+├── internal/workflowpin/       workflowpin_test.go: the action-pinning test (ADR-0021)
+├── gtk/, gobj/                 mainthread_test.go, register_test.go: the GLib tests (need libglib and libgobject on the host)
 ├── go.mod                      module github.com/frostyard/snowkit, go 1.24.6
 ├── Makefile                    verify / check / ci gate, lint, test, bump
 ├── mise.toml, mise.lock        golangci-lint and node pins
@@ -52,13 +53,19 @@ How it works:
    incrementing `uintptr` IDs (`idleCallbackID`).
 2. `idleCallbackMu` (a `sync.Mutex`) protects the map and the counter.
 3. `RunOnMainThread` takes the next ID, stores `fn`, then calls
-   `glib.IdleAdd(&cb, id)`. `cb` is a `glib.SourceFunc` that looks up the
-   callback by its `data` argument, deletes it from the map, releases the lock
-   and then calls it.
+   `glib.IdleAdd(&idleSourceFunc, id)`. `idleSourceFunc` is a package-level
+   `glib.SourceFunc` that looks up the callback by its `data` argument, deletes
+   it from the map, releases the lock and then calls it.
 
 Invariant: the mutex is held only to read or write the map, never while the
 user's callback runs, so a callback can call `RunOnMainThread` again without a
 deadlock.
+
+Invariant: the package has exactly 1 `glib.SourceFunc`, so every call shares 1
+purego callback slot. purego keeps a slot per function-variable ADDRESS, and a
+function value declared inside `RunOnMainThread` had a new address on every
+call: 1 slot of purego's 2000 per call, never freed, so a process panicked at
+call 2000 ([#10](https://github.com/frostyard/snowkit/issues/10), fixed).
 
 Typical use:
 
@@ -92,46 +99,51 @@ Types:
     at class initialization to override virtual methods. It is required:
     `RegisterType` calls it with no nil check.
 - `InstanceRegistry` maps GObject C pointers (`uintptr`) to Go struct pointers
-  (`unsafe.Pointer`):
-  - `Pin(o *gobject.Object, goInstance unsafe.Pointer)` stores the pair and
-    pins the Go pointer. Its destroy-notify cleanup never runs (see below).
+  (`unsafe.Pointer`) through a `*pinEntry`:
+  - `Pin(o *gobject.Object, goInstance unsafe.Pointer)` stores the pair, pins
+    the Go pointer, and gives GLib an ID that releases it when the GObject is
+    finalized (see below).
   - `Get(goPointer uintptr) unsafe.Pointer` returns the Go struct for a GObject
-    pointer, or `nil`.
+    pointer, or `nil` after finalization or after a later `Pin` replaced the
+    entry.
 
-Lifecycle. The design intent is "pin while the GObject lives, unpin when it is
-finalized"; the current code does only the first half
-([#12](https://github.com/frostyard/snowkit/issues/12)):
+Lifecycle: "pin while the GObject lives, unpin when it is finalized". The
+cleanup did not run before this change
+([#12](https://github.com/frostyard/snowkit/issues/12), fixed):
 
 1. **Registration.** `RegisterType` reads the parent's class and instance sizes
    with `gobject.NewTypeQuery`, then calls `gobject.TypeRegisterStaticSimple`
    with the class-init callback and a no-op instance-init callback.
 2. **Pinning.** The consumer calls `registry.Pin(obj, goPtr)` when it builds an
    instance (chairlift does it in its `constructed` override). `Pin`:
-   - pins `goPtr` with a new `runtime.Pinner`, so the collector does not move
-     or free it;
-   - stores `instances[obj.GoPointer()] = goPtr`;
-   - calls `SetDataFull("prevent_gc", 0, &cleanup)`, where `cleanup` would
-     delete the map entry and call `pinner.Unpin()`.
-3. **Cleanup (does not happen).** The data argument of `SetDataFull` is `0`
-   (NULL), and GLib does not call the destroy callback when the data is NULL
-   (puregotk's doc comment on `Object.SetDataFull`). With NULL data the call
-   stores nothing (`GetData("prevent_gc")` returns `0`). So `cleanup` never
-   runs: the map entry and the pin stay for the life of the process, also after
-   the GObject is finalized.
+   - builds a `*pinEntry` (registry, object key, Go pointer) and pins `goPtr`
+     with the entry's `runtime.Pinner`, so the collector does not move or free
+     it;
+   - stores the entry in the package table `pins` under a new non-zero ID, and
+     in `instances[obj.GoPointer()]`;
+   - calls `SetDataFull("prevent_gc", id, &pinDestroyNotify)`, where
+     `pinDestroyNotify` is the package's only `glib.DestroyNotify`. The data is
+     non-NULL, so GLib stores it and calls the notify. Both locks are released
+     before this call: `SetDataFull` can call the previous notify of the key
+     synchronously.
+3. **Cleanup.** GLib calls `pinDestroyNotify(id)` when it finalizes the object,
+   and also when `Pin` sets the same key again on the object (then the new data
+   is stored first). The notify deletes `pins[id]`, deletes
+   `instances[entry.key]` only if that value is still this same entry, and
+   calls `entry.pinner.Unpin()`.
 
-Current behavior (checked at `4f8bd38` with GLib on the host: a subtype of
-`GObject`, `Pin`, then `Unref`; a control `SetDataFull` with data `1` on the
-same object is called at finalization):
+Behavior now (checked with the tests in `gobj/register_test.go`, which need
+GLib on the host):
 
-- After the GObject is finalized, `Get` still returns the Go struct, and the
-  struct stays pinned. Each pinned instance leaks 1 Go struct and 1 map entry.
-  chairlift pins 1 application object, so it leaks 1 object for the process
-  life.
-- A second `Pin` on the same object overwrites the map entry; the first pinner
-  stays pinned.
-- A new GObject at a reused address has the same key: `Get` returns the old
-  struct until `Pin` overwrites it.
-- `InstanceRegistry` has no lock. Call `Pin` and `Get` on the GTK main thread.
+- After the GObject is finalized, `Get` returns nil, the entry leaves both
+  maps, and the Go struct is unpinned.
+- A second `Pin` on the same object releases the first Go pointer at once; `Get`
+  returns the second one and the table holds 1 entry.
+- A new GObject at a reused address gets a new ID: the old entry is already
+  gone, so the key cannot answer for the old struct.
+- `InstanceRegistry` and `pins` each have a mutex, because finalization can run
+  on another thread. `Pin` and `Get` stay safe to call on the GTK main thread;
+  a notify on its own thread takes the locks for a map operation only.
 
 ### Package `toast`: notification contract
 
@@ -159,17 +171,20 @@ scheduling without GObject registration, or the reverse.
 
 ### Pinner plus destroy notify (`gobj`)
 
-`runtime.Pinner` keeps the Go struct in place while C holds its pointer. The
-intent is that a GObject destroy notify releases it, so that the Go struct
-lives as long as the GObject; today the notify is never set
-([#12](https://github.com/frostyard/snowkit/issues/12)), so the struct stays
-pinned until the process ends.
+`runtime.Pinner` keeps the Go struct in place while C holds its pointer. A
+GObject destroy notify releases it, so that the Go struct lives as long as the
+GObject: `Pin` sets a non-zero ID as the data of the `"prevent_gc"` key with 1
+package-level notify, and the notify unpins the entry when GLib finalizes the
+object or when a second `Pin` replaces the key
+([#12](https://github.com/frostyard/snowkit/issues/12), fixed).
 
 ### ID registry for callbacks (`gtk`)
 
 The Go closure does not cross the C boundary. Its integer ID goes through the
-`uintptr data` argument of `glib.IdleAdd`, and the source function finds the
-closure in the map. No `unsafe.Pointer` conversion or `cgo.Handle` is needed.
+`uintptr data` argument of `glib.IdleAdd`, and the package-level source
+function finds the closure in the map. No `unsafe.Pointer` conversion or
+`cgo.Handle` is needed, and the ID keeps 1 purego callback slot for the whole
+process.
 
 ### puregotk, not cgo
 
@@ -179,27 +194,33 @@ build has no cgo:
 - no C compiler is needed to build;
 - cross-compilation works as for any pure Go module;
 - GTK and GLib shared libraries must be present at run time;
-- a test that calls GTK or GLib needs those libraries on the host. CI's
-  `ubuntu-latest` runners do not install them, and no such test exists today.
+- a test that calls GTK or GLib needs those libraries on the host. The `gtk`
+  and `gobj` tests import only `glib` and `gobject`, so they load
+  `libglib-2.0.so.0` and `libgobject-2.0.so.0` (CI's `ubuntu-latest` has both)
+  and no GTK library.
 
 ## Operational notes
 
-- **Callback slot limit.** puregotk's `glib.IdleAdd` and `SetDataFull` turn
-  each Go function pointer into a C callback with `purego.NewCallbackFnPtr`.
-  purego has a fixed table of 2000 callbacks on Linux and macOS (`maxCB`), and
-  it caches by function pointer. `RunOnMainThread` makes a new `SourceFunc`
-  value on every call, and `Pin` a new `DestroyNotify` (made even though GLib
-  never stores it), and neither calls
-  `glib.UnrefCallback`. So each call uses 1 slot for the life of the process,
-  and after about 2000 calls (fewer, because other callbacks share the table)
-  purego panics with `purego: the maximum number of callbacks has been
-  reached`. Reproduced at `4f8bd38` with 2500 calls and no main loop: the panic
-  came at call 2000. Tracked in
-  [frostyard/snowkit#10](https://github.com/frostyard/snowkit/issues/10).
-- **`Pin` leaks.** Each pinned instance stays pinned and in the map after
-  finalization ([#12](https://github.com/frostyard/snowkit/issues/12)).
-- **Thread rules.** `RunOnMainThread` is safe from any goroutine. Everything in
-  `gobj` runs on the main thread.
+- **Callback slots.** puregotk's `glib.IdleAdd` and `Object.SetDataFull` turn a
+  Go function pointer into a C callback with `purego.NewCallbackFnPtr`. purego
+  has a fixed table of 2000 callbacks on Linux and macOS (`maxCB`), and it
+  caches by the ADDRESS of the function variable. `gtk` passes the
+  package-level `idleSourceFunc` to every `glib.IdleAdd`, and `gobj` the
+  package-level `pinDestroyNotify` to every `SetDataFull`, so each package uses
+  1 slot for the life of the process, whatever the number of calls. A function
+  value declared inside the call had a new address per call, 1 slot each, and
+  purego panicked at call 2000 with `purego: the maximum number of callbacks
+  has been reached`; reproduced at `4f8bd38` and fixed
+  ([frostyard/snowkit#10](https://github.com/frostyard/snowkit/issues/10)).
+  `gtk/mainthread_test.go` (2500 calls) and `gobj/register_test.go` (2500
+  pinned objects) guard it.
+- **`Pin` cleanup.** `Pin` no longer leaks: the entry and the pin go away when
+  the GObject is finalized, or when a second `Pin` replaces the entry
+  ([#12](https://github.com/frostyard/snowkit/issues/12), fixed;
+  `gobj/register_test.go`).
+- **Thread rules.** `RunOnMainThread` is safe from any goroutine. `gobj` is
+  safe from any thread: `InstanceRegistry` and the `pins` table have a mutex,
+  and no lock is held across a GLib call.
 
 ## Dependencies
 
@@ -223,12 +244,22 @@ The gate is the Makefile triad ([ADR-0003](../adr/0003-verify-gate-risk-paths-an
   `.memory/corrections.jsonl` (`scripts/check-corrections.mjs --base`), then
   `go test -race -short ./...`.
 
-The only Go test is `internal/workflowpin/workflowpin_test.go`. It walks
+The Go tests are `internal/workflowpin/workflowpin_test.go`, `gtk/mainthread_test.go`
+and `gobj/register_test.go`.
+
+`internal/workflowpin` walks
 `.github/workflows` and `.github/actions` and fails on any `uses:` that is not
 a 40-character commit SHA with a `# v…` comment (local `./` and `docker://`
 references are skipped). A reusable workflow (`…/.github/workflows/…@SHA`) can
 name the pull request of the pinned commit instead, because frostyard/core has
 no release tags: `risk-paths.yml` uses `# core#225`. It fails when it finds no workflow file.
+
+`gtk/mainthread_test.go` adds 2500 idle sources through `RunOnMainThread` and
+iterates the default main context; `gobj/register_test.go` pins and finalizes
+plain `GObject`s. Both load GLib and GObject only (no GTK), so they run
+wherever `libglib-2.0.so.0` and `libgobject-2.0.so.0` exist, CI included. They
+are the guards of [#10](https://github.com/frostyard/snowkit/issues/10) and
+[#12](https://github.com/frostyard/snowkit/issues/12).
 
 Versions come from `svu` with [.svu.yml](../../.svu.yml) (`v0: true`: no bump
 to v1 while the version is v0; `always: true`: a patch bump when no commit
