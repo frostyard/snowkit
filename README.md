@@ -21,15 +21,24 @@ puregotk loads GTK with `dlopen` at run time, so building needs no C compiler,
 but the GTK and GLib shared libraries must be installed where the application
 runs.
 
-## Known limit
+## Callback slots and the Go lifecycle
 
-Each `RunOnMainThread` call and each `InstanceRegistry.Pin` uses 1 of purego's
-2000 callback slots and does not free it, so a process panics after about 2000
-calls. See [#10](https://github.com/frostyard/snowkit/issues/10).
+purego keeps 1 callback slot per function address and has 2000 per process on
+Linux and macOS. Both packages hand puregotk 1 package-level function and take
+its slot in `init`, before any goroutine runs, so `gtk` and `gobj` use 1 slot
+each for the whole process, however many `RunOnMainThread` calls or `Pin` calls
+a program makes.
 
-`InstanceRegistry.Pin` keeps the Go struct pinned and in the registry after its
-GObject is finalized: the cleanup never runs. See
-[#12](https://github.com/frostyard/snowkit/issues/12).
+`InstanceRegistry.Pin` pins the Go struct, and the GObject releases it: GLib
+calls the package destroy notify when it finalizes the object, and the notify
+deletes the current registry entry and unpins, so `Get` then returns nil. A
+second `Pin` on the same object releases the old pin and keeps the new entry,
+so `Get` returns the new pointer; the old notify deletes the registry entry
+only if it is still its own entry. Call `Pin` on the GTK main thread only, and
+never concurrently for the same object. History:
+[#10](https://github.com/frostyard/snowkit/issues/10) (the slot limit) and
+[#12](https://github.com/frostyard/snowkit/issues/12) (the cleanup that never
+ran) are both fixed.
 
 ## License
 

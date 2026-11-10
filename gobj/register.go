@@ -3,11 +3,15 @@ package gobj
 
 import (
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"codeberg.org/puregotk/puregotk/v4/glib"
 	"codeberg.org/puregotk/puregotk/v4/gobject"
 )
+
+// pinDataKey is the GObject data key that carries the ID of a pin entry.
+const pinDataKey = "prevent_gc"
 
 // TypeDef describes a GObject subtype to register.
 type TypeDef struct {
@@ -19,33 +23,140 @@ type TypeDef struct {
 	ClassInit func(tc *gobject.TypeClass, registry *InstanceRegistry)
 }
 
-// InstanceRegistry maps GObject pointers to Go struct pointers.
+// pinEntry is the Go side of 1 pinned Go struct: the pin itself, and the
+// registry entry that must go away when the GObject is finalized.
+type pinEntry struct {
+	registry *InstanceRegistry
+	// key is the GObject pointer, also the key in registry.instances.
+	key    uintptr
+	ptr    unsafe.Pointer
+	pinner runtime.Pinner
+}
+
+var (
+	// pinsMu guards pins and pinID. It is never held across a GLib call.
+	pinsMu sync.Mutex
+	// pins holds the live pin entries by their non-zero ID. The ID is the data
+	// argument of the GObject data key, so the destroy notify finds its entry.
+	pins  = make(map[uintptr]*pinEntry)
+	pinID uintptr
+
+	// pinDestroyNotifyAddr is the purego callback slot of pinDestroyNotify,
+	// taken once in init.
+	pinDestroyNotifyAddr uintptr
+)
+
+// pinDestroyNotify is the single glib.DestroyNotify this package gives to
+// GLib. purego caches 1 callback slot per function-variable ADDRESS, so a
+// function value declared inside Pin would take 1 of purego's 2000 slots per
+// call and never free it (frostyard/snowkit#10). It runs when GLib finalizes
+// the object, or when Pin sets the data key again on the same object, which
+// releases the previous entry (frostyard/snowkit#12).
+var pinDestroyNotify glib.DestroyNotify = func(data uintptr) {
+	releasePin(data)
+}
+
+// init takes the callback slot of pinDestroyNotify before any goroutine runs.
+//
+// purego's NewCallbackFnPtr checks its cache and allocates a slot under
+// separate locks, so it is not 1 atomic operation: 2 goroutines that make the
+// FIRST call at the same time can each take a slot, and the package would hold
+// 2 slots instead of 1. The slot is recorded in pinDestroyNotifyAddr, and the
+// tests check that a later call returns it.
+func init() {
+	pinDestroyNotifyAddr = glib.NewCallback(&pinDestroyNotify)
+}
+
+// releasePin drops the pin entry with the given ID: the pins entry, the
+// registry entry if it is still this same entry, and the pin itself. It takes
+// no GLib call, so it may run on the thread that finalizes the GObject.
+func releasePin(id uintptr) {
+	pinsMu.Lock()
+	entry, ok := pins[id]
+	if ok {
+		delete(pins, id)
+	}
+	pinsMu.Unlock()
+	if !ok {
+		return
+	}
+
+	entry.registry.mu.Lock()
+	// A second Pin on the same object replaced this entry before GLib called
+	// this notify; that newer entry owns the registry key now.
+	if entry.registry.instances[entry.key] == entry {
+		delete(entry.registry.instances, entry.key)
+	}
+	entry.registry.mu.Unlock()
+
+	entry.pinner.Unpin()
+}
+
+// InstanceRegistry maps GObject pointers to Go struct pointers. Its mutex
+// guards the map, because the destroy notify can run on any thread.
+//
+// Thread rules: call Pin on the GTK main thread only, and never concurrently
+// for the same object; Get is safe from any thread; the destroy notify can run
+// on any thread.
 type InstanceRegistry struct {
-	instances map[uintptr]unsafe.Pointer
+	mu        sync.Mutex
+	instances map[uintptr]*pinEntry
 }
 
 func newRegistry() *InstanceRegistry {
-	return &InstanceRegistry{instances: make(map[uintptr]unsafe.Pointer)}
+	return &InstanceRegistry{instances: make(map[uintptr]*pinEntry)}
 }
 
-// Pin registers a Go struct pointer with the GObject, pins it to prevent GC,
-// and sets up cleanup when the GObject is destroyed.
+// Pin registers a Go struct pointer with the GObject and pins it so the
+// collector neither moves nor frees it while C holds its pointer.
+//
+// The pin lives as long as the GObject: Pin stores a non-zero ID as the data
+// of the "prevent_gc" key with 1 package-level destroy notify, and GLib calls
+// that notify with the ID when it finalizes the object. The notify then
+// deletes the registry entry, drops the pin entry and unpins the Go pointer. A
+// second Pin on the same object releases the previous Go pointer the same way:
+// GLib calls the old notify when the key is set again, and Get returns the new
+// pointer.
+//
+// Call Pin on the GTK main thread only, and never concurrently for the same
+// object. Pin updates the registry map and then calls SetDataFull with no lock
+// held, so 2 concurrent Pin calls on 1 object can leave Get nil with a Go
+// struct still pinned. Get and the destroy notify take the locks for 1 map
+// operation only, so Get is safe from any thread and the notify can run on the
+// thread that finalizes the GObject.
 func (r *InstanceRegistry) Pin(o *gobject.Object, goInstance unsafe.Pointer) {
-	var pinner runtime.Pinner
-	pinner.Pin(goInstance)
-	ptr := o.GoPointer()
-	r.instances[ptr] = goInstance
+	entry := &pinEntry{registry: r, key: o.GoPointer(), ptr: goInstance}
+	entry.pinner.Pin(goInstance)
 
-	var cleanup glib.DestroyNotify = func(data uintptr) {
-		delete(r.instances, ptr)
-		pinner.Unpin()
-	}
-	o.SetDataFull("prevent_gc", 0, &cleanup)
+	pinsMu.Lock()
+	pinID++
+	id := pinID
+	pins[id] = entry
+	pinsMu.Unlock()
+
+	r.mu.Lock()
+	r.instances[entry.key] = entry
+	r.mu.Unlock()
+
+	// SetDataFull can call the previous destroy notify of this key
+	// synchronously, so it runs after both locks are released.
+	o.SetDataFull(pinDataKey, id, &pinDestroyNotify)
 }
 
-// Get retrieves the Go struct pointer for a GObject pointer.
+// Get retrieves the Go struct pointer for a GObject pointer. It is safe from
+// any thread.
+//
+// Finalization removes the current entry, and Get then returns nil. A second
+// Pin on the same object releases the old pin and keeps the new entry, so Get
+// returns the new pointer.
 func (r *InstanceRegistry) Get(goPointer uintptr) unsafe.Pointer {
-	return r.instances[goPointer]
+	r.mu.Lock()
+	entry, ok := r.instances[goPointer]
+	r.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	return entry.ptr
 }
 
 // RegisterType registers a new GObject subtype and returns its GLib type and instance registry.
