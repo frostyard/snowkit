@@ -5,6 +5,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"codeberg.org/puregotk/puregotk/v4/glib"
 	"codeberg.org/puregotk/puregotk/v4/gobject"
 )
 
@@ -23,6 +24,19 @@ func pinCount() int {
 	pinsMu.Lock()
 	defer pinsMu.Unlock()
 	return len(pins)
+}
+
+// TestPinDestroyNotifySlotMadeAtInit checks that init took the callback slot of
+// pinDestroyNotify before any concurrent use: a later call must return the same
+// address. purego is not atomic between its cache check and its slot
+// allocation, so the first call must not come from 2 goroutines.
+func TestPinDestroyNotifySlotMadeAtInit(t *testing.T) {
+	if pinDestroyNotifyAddr == 0 {
+		t.Fatal("pinDestroyNotifyAddr is 0: init did not take the callback slot")
+	}
+	if got := glib.NewCallback(&pinDestroyNotify); got != pinDestroyNotifyAddr {
+		t.Fatalf("glib.NewCallback returned %#x, want the init slot %#x", got, pinDestroyNotifyAddr)
+	}
 }
 
 // TestPinCleanupOnFinalize fails when the destroy notify never runs, which is

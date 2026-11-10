@@ -41,6 +41,19 @@ func TestRunOnMainThreadManyCalls(t *testing.T) {
 	}
 }
 
+// TestIdleSourceFuncSlotMadeAtInit checks that init took the callback slot of
+// idleSourceFunc before any concurrent use: a later call must return the same
+// address. purego is not atomic between its cache check and its slot
+// allocation, so the first call must not come from 2 goroutines.
+func TestIdleSourceFuncSlotMadeAtInit(t *testing.T) {
+	if idleSourceFuncAddr == 0 {
+		t.Fatal("idleSourceFuncAddr is 0: init did not take the callback slot")
+	}
+	if got := glib.NewCallback(&idleSourceFunc); got != idleSourceFuncAddr {
+		t.Fatalf("glib.NewCallback returned %#x, want the init slot %#x", got, idleSourceFuncAddr)
+	}
+}
+
 // TestRunOnMainThreadNested checks that a callback can schedule another
 // callback: the source function holds no lock while the user's function runs.
 func TestRunOnMainThreadNested(t *testing.T) {

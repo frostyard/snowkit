@@ -11,6 +11,10 @@ var (
 	idleCallbackMu sync.Mutex
 	idleCallbacks  = make(map[uintptr]func())
 	idleCallbackID uintptr
+
+	// idleSourceFuncAddr is the purego callback slot of idleSourceFunc, taken
+	// once in init.
+	idleSourceFuncAddr uintptr
 )
 
 // idleSourceFunc is the single glib.SourceFunc this package gives to GLib.
@@ -35,6 +39,17 @@ var idleSourceFunc glib.SourceFunc = func(data uintptr) bool {
 		callback()
 	}
 	return false
+}
+
+// init takes the callback slot of idleSourceFunc before any goroutine runs.
+//
+// purego's NewCallbackFnPtr checks its cache and allocates a slot under
+// separate locks, so it is not 1 atomic operation: 2 goroutines that make the
+// FIRST call at the same time can each take a slot, and the package would hold
+// 2 slots instead of 1. The slot is recorded in idleSourceFuncAddr, and the
+// tests check that a later call returns it.
+func init() {
+	idleSourceFuncAddr = glib.NewCallback(&idleSourceFunc)
 }
 
 // RunOnMainThread schedules fn to run on the GTK main thread via glib.IdleAdd.

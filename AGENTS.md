@@ -58,12 +58,16 @@ Node.js 22 or later for the template gate.
   calls that notify with the ID when it finalizes the object, and also when
   `Pin` sets the same key again on the object (then the previous Go pointer is
   released). The notify deletes `pins[id]`, deletes the registry entry only if
-  it is still that same entry, and unpins. `Get` returns nil after
-  finalization, or after a later `Pin` replaced the entry
+  it is still that same entry, and unpins. Finalization removes the current
+  entry, so `Get` then returns nil; a second `Pin` on the same object releases
+  the old pin and keeps the new entry, so `Get` returns the new pointer
   ([frostyard/snowkit#12](https://github.com/frostyard/snowkit/issues/12) is
   fixed). `InstanceRegistry` and the `pins` table each have a mutex, because
-  finalization can run on another thread. Never call into GLib while you hold a
-  lock: `SetDataFull` can call the old destroy notify synchronously.
+  the destroy notify can run on any thread. Call `Pin` on the GTK main thread
+  only: `Pin` updates the map and then calls `SetDataFull`, and 2 concurrent
+  `Pin` calls on 1 object can leave `Get` nil with a Go struct still pinned.
+  Never call into GLib while you hold a lock: `SetDataFull` can call the old
+  destroy notify synchronously.
 - **Check a GLib lifecycle claim against the binding.** Before a doc or a
   comment says when GLib calls a callback, read the puregotk doc comment of the
   call (in the module cache) and run it once with GLib on the host. A claim
@@ -75,9 +79,13 @@ Node.js 22 or later for the template gate.
   `glib.IdleAdd`, and `gobj` passes the package-level `pinDestroyNotify` to
   every `SetDataFull`, so each of them uses 1 slot for the whole process
   ([frostyard/snowkit#10](https://github.com/frostyard/snowkit/issues/10) is
-  fixed). Do not add a per-call `glib.NewCallback` path, and never pass a
-  function variable declared inside a function by address to puregotk: its new
-  address takes a new slot that is never freed.
+  fixed). Each package takes its slot in `init` (`idleSourceFuncAddr`,
+  `pinDestroyNotifyAddr`): purego's `NewCallbackFnPtr` checks its cache and
+  allocates a slot under separate locks, so 2 goroutines that make the FIRST
+  call at the same time can each take a slot. Do not add a per-call
+  `glib.NewCallback` path, and never pass a function variable declared inside a
+  function by address to puregotk: its new address takes a new slot that is
+  never freed.
 - **`toast.Notifier` is a contract only.** It has `ShowToast(message string)`
   and `ShowErrorToast(message string)`; the consuming application implements
   it. Do not add an implementation to this module.

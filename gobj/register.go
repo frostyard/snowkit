@@ -40,6 +40,10 @@ var (
 	// argument of the GObject data key, so the destroy notify finds its entry.
 	pins  = make(map[uintptr]*pinEntry)
 	pinID uintptr
+
+	// pinDestroyNotifyAddr is the purego callback slot of pinDestroyNotify,
+	// taken once in init.
+	pinDestroyNotifyAddr uintptr
 )
 
 // pinDestroyNotify is the single glib.DestroyNotify this package gives to
@@ -50,6 +54,17 @@ var (
 // releases the previous entry (frostyard/snowkit#12).
 var pinDestroyNotify glib.DestroyNotify = func(data uintptr) {
 	releasePin(data)
+}
+
+// init takes the callback slot of pinDestroyNotify before any goroutine runs.
+//
+// purego's NewCallbackFnPtr checks its cache and allocates a slot under
+// separate locks, so it is not 1 atomic operation: 2 goroutines that make the
+// FIRST call at the same time can each take a slot, and the package would hold
+// 2 slots instead of 1. The slot is recorded in pinDestroyNotifyAddr, and the
+// tests check that a later call returns it.
+func init() {
+	pinDestroyNotifyAddr = glib.NewCallback(&pinDestroyNotify)
 }
 
 // releasePin drops the pin entry with the given ID: the pins entry, the
@@ -78,8 +93,11 @@ func releasePin(id uintptr) {
 }
 
 // InstanceRegistry maps GObject pointers to Go struct pointers. Its mutex
-// guards the map: finalization, and so the destroy notify, can run on a
-// thread other than the GTK main thread.
+// guards the map, because the destroy notify can run on any thread.
+//
+// Thread rules: call Pin on the GTK main thread only, and never concurrently
+// for the same object; Get is safe from any thread; the destroy notify can run
+// on any thread.
 type InstanceRegistry struct {
 	mu        sync.Mutex
 	instances map[uintptr]*pinEntry
@@ -97,7 +115,15 @@ func newRegistry() *InstanceRegistry {
 // that notify with the ID when it finalizes the object. The notify then
 // deletes the registry entry, drops the pin entry and unpins the Go pointer. A
 // second Pin on the same object releases the previous Go pointer the same way:
-// GLib calls the old notify when the key is set again.
+// GLib calls the old notify when the key is set again, and Get returns the new
+// pointer.
+//
+// Call Pin on the GTK main thread only, and never concurrently for the same
+// object. Pin updates the registry map and then calls SetDataFull with no lock
+// held, so 2 concurrent Pin calls on 1 object can leave Get nil with a Go
+// struct still pinned. Get and the destroy notify take the locks for 1 map
+// operation only, so Get is safe from any thread and the notify can run on the
+// thread that finalizes the GObject.
 func (r *InstanceRegistry) Pin(o *gobject.Object, goInstance unsafe.Pointer) {
 	entry := &pinEntry{registry: r, key: o.GoPointer(), ptr: goInstance}
 	entry.pinner.Pin(goInstance)
@@ -117,8 +143,12 @@ func (r *InstanceRegistry) Pin(o *gobject.Object, goInstance unsafe.Pointer) {
 	o.SetDataFull(pinDataKey, id, &pinDestroyNotify)
 }
 
-// Get retrieves the Go struct pointer for a GObject pointer. It returns nil
-// once the GObject is finalized, or after a later Pin replaced the entry.
+// Get retrieves the Go struct pointer for a GObject pointer. It is safe from
+// any thread.
+//
+// Finalization removes the current entry, and Get then returns nil. A second
+// Pin on the same object releases the old pin and keeps the new entry, so Get
+// returns the new pointer.
 func (r *InstanceRegistry) Get(goPointer uintptr) unsafe.Pointer {
 	r.mu.Lock()
 	entry, ok := r.instances[goPointer]

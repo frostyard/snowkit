@@ -67,6 +67,12 @@ function value declared inside `RunOnMainThread` had a new address on every
 call: 1 slot of purego's 2000 per call, never freed, so a process panicked at
 call 2000 ([#10](https://github.com/frostyard/snowkit/issues/10), fixed).
 
+The package `init` takes that slot (`idleSourceFuncAddr = glib.NewCallback(&idleSourceFunc)`)
+before any goroutine runs. purego's `NewCallbackFnPtr` checks its cache and
+allocates a slot under separate locks, so 2 goroutines that make the first call
+at the same time can each take a slot; the `init` call makes every later call,
+from any goroutine, a cache hit.
+
 Typical use:
 
 ```go
@@ -104,8 +110,8 @@ Types:
     the Go pointer, and gives GLib an ID that releases it when the GObject is
     finalized (see below).
   - `Get(goPointer uintptr) unsafe.Pointer` returns the Go struct for a GObject
-    pointer, or `nil` after finalization or after a later `Pin` replaced the
-    entry.
+    pointer. Finalization removes the current entry, so `Get` then returns
+    nil; after a second `Pin` on the same object it returns the new pointer.
 
 Lifecycle: "pin while the GObject lives, unpin when it is finalized". The
 cleanup did not run before this change
@@ -137,13 +143,17 @@ GLib on the host):
 
 - After the GObject is finalized, `Get` returns nil, the entry leaves both
   maps, and the Go struct is unpinned.
-- A second `Pin` on the same object releases the first Go pointer at once; `Get`
-  returns the second one and the table holds 1 entry.
+- A second `Pin` on the same object releases the old pin at once and keeps the
+  new entry, so `Get` returns the new pointer and the table holds 1 entry. The
+  old notify deletes the registry entry only if it is still its own entry.
 - A new GObject at a reused address gets a new ID: the old entry is already
   gone, so the key cannot answer for the old struct.
-- `InstanceRegistry` and `pins` each have a mutex, because finalization can run
-  on another thread. `Pin` and `Get` stay safe to call on the GTK main thread;
-  a notify on its own thread takes the locks for a map operation only.
+- `InstanceRegistry` and `pins` each have a mutex, because the destroy notify
+  can run on any thread. `Get` is safe from any thread. `Pin` is not: call it
+  on the GTK main thread only, and never concurrently for the same object,
+  because it updates the map and then calls `SetDataFull` as 2 steps; 2
+  concurrent `Pin` calls on 1 object can leave `Get` nil with a Go struct
+  still pinned.
 
 ### Package `toast`: notification contract
 
@@ -212,15 +222,24 @@ build has no cgo:
   purego panicked at call 2000 with `purego: the maximum number of callbacks
   has been reached`; reproduced at `4f8bd38` and fixed
   ([frostyard/snowkit#10](https://github.com/frostyard/snowkit/issues/10)).
-  `gtk/mainthread_test.go` (2500 calls) and `gobj/register_test.go` (2500
-  pinned objects) guard it.
+  Each package takes its slot in `init` (`idleSourceFuncAddr`,
+  `pinDestroyNotifyAddr`), because purego's `NewCallbackFnPtr` checks its cache
+  and allocates a slot under separate locks: 2 goroutines that make the first
+  call at the same time can each take a slot. `gtk/mainthread_test.go` (2500
+  calls) and `gobj/register_test.go` (2500 pinned objects) guard the limit;
+  `TestIdleSourceFuncSlotMadeAtInit` and `TestPinDestroyNotifySlotMadeAtInit`
+  guard the init.
 - **`Pin` cleanup.** `Pin` no longer leaks: the entry and the pin go away when
-  the GObject is finalized, or when a second `Pin` replaces the entry
+  the GObject is finalized, and a second `Pin` on the same object releases the
+  old pin and keeps the new entry
   ([#12](https://github.com/frostyard/snowkit/issues/12), fixed;
   `gobj/register_test.go`).
-- **Thread rules.** `RunOnMainThread` is safe from any goroutine. `gobj` is
-  safe from any thread: `InstanceRegistry` and the `pins` table have a mutex,
-  and no lock is held across a GLib call.
+- **Thread rules.** `RunOnMainThread` is safe from any goroutine. In `gobj`,
+  `Get` is safe from any thread and the destroy notify can run on any thread,
+  because `InstanceRegistry` and the `pins` table have a mutex and no lock is
+  held across a GLib call. `Pin` is main-thread only: it updates the map and
+  then calls `SetDataFull` as 2 steps, so 2 concurrent `Pin` calls on 1 object
+  can leave `Get` nil with a Go struct still pinned.
 
 ## Dependencies
 
