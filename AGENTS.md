@@ -25,7 +25,7 @@ them rather than improvising, whichever agent you are:
 ```bash
 make verify       # the credential-free, non-mutating gate: tidy diff, vet, gofmt -l, pinned lint, template gate, tests
 make check        # developer gate: fmt (gofmt -w), the static checks of verify, then go test -v
-make ci           # verify, the race tests, and with BASE set the corrections append-only check
+make ci           # verify, the race tests, and with BASE set the corrections records check
 make ci BASE=origin/main   # what CI job Verify runs, against the PR base
 make test         # go test -v ./...
 make test-race    # go test -race -short ./...
@@ -106,8 +106,8 @@ Node.js 22 or later for the template gate.
   standard-library vulnerability, raise the `go` line to the lowest patch that
   fixes it.
 - Run `make verify` before you call any change done. CI job `Verify` runs
-  `make ci`, which also checks that `.memory/corrections.jsonl` is append-only
-  against the PR base; run `make ci BASE=origin/main` for the same check
+  `make ci`, which also checks the records in `.memory/corrections/` against
+  the PR base; run `make ci BASE=origin/main` for the same check
   locally.
 
 **Test reliability.** No sleeps for timing (wait on a condition or inject a
@@ -118,8 +118,8 @@ same PR. Never retry a job or a test until it is green.
 **Blocker to guard.** When a review (agent cross-review, owner review, or a
 human) finds a blocking point, the PR that fixes it also adds a guard: a
 targeted test that fails without the fix (preferred), or an `AGENTS.md` rule
-when no test can catch it. The same PR appends 1 line to
-`.memory/corrections.jsonl` (`evidence`: the PR and the review;
+when no test can catch it. The same PR adds 1 record file under
+`.memory/corrections/` (`evidence`: the PR and the review;
 `promoted_to`: the test or the rule). See `.memory/README.md`.
 
 **Risk paths.** `.github/risk-paths.json` lists the risk paths, each at a level
