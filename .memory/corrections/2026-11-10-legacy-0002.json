@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-10",
+  "scope": "code",
+  "correction": "A function variable passed by address to puregotk takes 1 purego callback slot per address, so make it package-level, and give SetDataFull non-NULL data so the destroy notify runs",
+  "evidence": "frostyard/snowkit#10 and #12",
+  "promoted_to": "gtk/mainthread_test.go, gobj/register_test.go, AGENTS.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-10",
+  "scope": "code",
+  "correction": "purego's NewCallbackFnPtr is not atomic between its cache check and its slot allocation, so register a package-level callback once in init before concurrent use; and gobj.Pin is not atomic between its map update and SetDataFull, so it is main-thread only",
+  "evidence": "frostyard/snowkit#16, cross-review (openai/gpt-6.1-sol) of head b48abbd, findings 1 and 2",
+  "promoted_to": "gtk/mainthread_test.go, gobj/register_test.go, AGENTS.md"
+}

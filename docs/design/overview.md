@@ -259,8 +259,8 @@ The gate is the Makefile triad ([ADR-0003](../adr/0003-verify-gate-risk-paths-an
   then `go test -count=1 ./...`.
 - `make check`: the developer gate. `gofmt -w`, the static checks of `verify`,
   then `go test -v ./...`.
-- `make ci`: `verify`, then with `BASE` set the append-only check of
-  `.memory/corrections.jsonl` (`scripts/check-corrections.mjs --base`), then
+- `make ci`: `verify`, then with `BASE` set the records check of
+  `.memory/corrections/` (`scripts/check-corrections.mjs --base`), then
   `go test -race -short ./...`.
 
 The Go tests are `internal/workflowpin/workflowpin_test.go`, `gtk/mainthread_test.go`
