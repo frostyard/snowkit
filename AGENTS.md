@@ -104,7 +104,11 @@ Node.js 22 or later for the template gate.
 - **Go comes from `go.mod` only.** CI reads the `go` line (`go-version-file:
   go.mod`) and runs `govulncheck` v1.6.0. When govulncheck reports a reachable
   standard-library vulnerability, raise the `go` line to the lowest patch that
-  fixes it.
+  fixes it. The govulncheck install step builds with the exact toolchain
+  go1.25.14 because govulncheck v1.6.0 needs Go 1.25 and a floating toolchain
+  can resolve to a release whose checksum is not yet published (#20).
+  `internal/workflowpin` fails on a GOTOOLCHAIN setting that is not an exact
+  release or `local`.
 - Run `make verify` before you call any change done. CI job `Verify` runs
   `make ci`, which also checks the records in `.memory/corrections/` against
   the PR base; run `make ci BASE=origin/main` for the same check

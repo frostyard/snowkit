@@ -141,9 +141,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # auto picks the newest Go release, which can precede its checksum (#20).
+      # An exact published release builds govulncheck the same way every run;
+      # the scan step still uses go.mod's Go.
       - name: Install govulncheck
         env:
-          GOTOOLCHAIN: auto
+          GOTOOLCHAIN: go1.25.14
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
       - name: Run govulncheck

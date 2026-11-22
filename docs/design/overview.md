@@ -306,9 +306,12 @@ Every job reads Go from `go.mod` (`go-version-file: go.mod`), now 1.24.6: the
 lowest Go 1.24 patch that fixes GO-2025-3956 (`os/exec`) and GO-2025-3750
 (`os`), which govulncheck reported as reachable at 1.24.2. `setup-go` sets
 `GOTOOLCHAIN=local`. govulncheck v1.6.0 needs Go 1.25 to build, so its install
-step sets `GOTOOLCHAIN=auto` and `go install` can fetch a newer toolchain for
-the build; the scan step keeps `GOTOOLCHAIN=local`, so it checks the standard
-library of the `go.mod` version.
+step sets `GOTOOLCHAIN=go1.25.14` for that build: `auto` picks the newest
+release, which once was listed before the checksum database had it
+(frostyard/snowkit#20). The `internal/workflowpin` test fails on any
+GOTOOLCHAIN setting that is not an exact release or `local`. The scan step
+keeps `GOTOOLCHAIN=local`, so it checks the standard library of the `go.mod`
+version.
 
 `.github/workflows/risk-paths.yml` is the caller of frostyard/core's PR triage
 workflow (`pr-triage.yml`, pinned by SHA) on `pull_request_target`. It adds 1
