@@ -26,28 +26,7 @@ var (
 // workflow from a repository with no release tags may name its pull request
 // instead ("# core#225").
 func TestActionsPinnedToCommitSHA(t *testing.T) {
-	var files []string
-	for _, dir := range []string{"../../" + ".github/workflows", "../../" + ".github/actions"} {
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			ext := filepath.Ext(path)
-			if !d.IsDir() && (ext == ".yml" || ext == ".yaml") {
-				files = append(files, path)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(files) == 0 {
-		t.Fatal("found 0 workflow files: the path is probably wrong")
-	}
+	files := workflowFiles(t)
 	for _, file := range files {
 		f, err := os.Open(file)
 		if err != nil {
@@ -77,4 +56,33 @@ func TestActionsPinnedToCommitSHA(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// workflowFiles lists every .yml and .yaml file under .github/workflows and
+// .github/actions, and fails the test when it finds none.
+func workflowFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	for _, dir := range []string{"../../" + ".github/workflows", "../../" + ".github/actions"} {
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			ext := filepath.Ext(path)
+			if !d.IsDir() && (ext == ".yml" || ext == ".yaml") {
+				files = append(files, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(files) == 0 {
+		t.Fatal("found 0 workflow files: the path is probably wrong")
+	}
+	return files
 }
