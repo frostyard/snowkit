@@ -323,7 +323,7 @@ says why (core ADR-0077, ADR-0078; ADR-0068 keeps `risk:high` as the alias of
 L1 and L2). Its job id is `pr-triage`, and it is not a required check.
 
 Dependabot (`.github/dependabot.yml`) updates `gomod` and `github-actions`
-weekly.
+monthly (core ADR-0089).
 
 ## Configuration
 

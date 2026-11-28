@@ -159,7 +159,7 @@ Releases and dependencies:
   push a tag or publish a release.
 - **Dependencies:** `codeberg.org/puregotk/puregotk` (direct) and
   `codeberg.org/puregotk/purego` (indirect). Dependabot updates `gomod` and
-  `github-actions` weekly.
+  `github-actions` monthly (core ADR-0089).
 - **Who uses this module:** frostyard/chairlift (`gobj` and `gtk`). An exported
   API change needs a matching chairlift change.
 
